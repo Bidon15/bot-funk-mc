@@ -12,13 +12,23 @@ log = logging.getLogger(__name__)
 
 
 def _extract_text(resp) -> str:
-    """Extract text from LLM response, handling Minimax differences."""
-    block = resp.content[0]
-    if hasattr(block, "text"):
-        return block.text.strip()
-    if isinstance(block, dict):
-        return block.get("text", json.dumps(block)).strip()
-    return str(block).strip()
+    """Extract text from LLM response, skipping thinking blocks (Minimax extended thinking)."""
+    for block in resp.content:
+        # Skip ThinkingBlock / thinking content
+        block_type = getattr(block, "type", None)
+        if block_type == "thinking":
+            continue
+        if hasattr(block, "text"):
+            return block.text.strip()
+        if isinstance(block, dict):
+            if block.get("type") == "thinking":
+                continue
+            if "text" in block:
+                return block["text"].strip()
+    # Fallback: stringify the whole response
+    log.warning("No text block found in LLM response, content types: %s",
+                [getattr(b, "type", type(b).__name__) for b in resp.content])
+    return str(resp.content[-1]).strip()
 
 SYSTEM_PROMPT = """\
 You are an autonomous trading agent on bot.fun, an onchain memecoin marketplace on Eden testnet.

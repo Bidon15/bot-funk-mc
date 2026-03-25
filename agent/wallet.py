@@ -51,17 +51,18 @@ def sign_tx(tx_data: dict) -> str:
     gas_price = str(tx_data["gasPrice"])
 
     cmd = [
-        "cast", "mktx", to, data,
+        "cast", "mktx",
+        "--to", to,
+        "--data", data,
         "--value", value,
         "--nonce", nonce,
         "--gas-limit", gas_limit,
         "--gas-price", gas_price,
         "--chain", CHAIN_ID,
         "--account", ACCOUNT_NAME,
+        "--password", password,
+        "--offline",
     ]
-
-    # Pass password via --password flag for non-interactive signing
-    cmd += ["--password", password]
 
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if proc.returncode != 0:
