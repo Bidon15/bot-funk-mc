@@ -21,21 +21,19 @@ def setup_keystore() -> str:
     os.makedirs(KEYSTORE_DIR, exist_ok=True)
     keystore_file = os.path.join(KEYSTORE_DIR, ACCOUNT_NAME)
 
-    # If keystore already exists, derive address from it
-    if os.path.isfile(keystore_file):
-        log.info("Keystore already exists, deriving address")
-        addr = _run_cast(["cast", "wallet", "address", "--account", ACCOUNT_NAME, "--unsafe-password", password])
-        return addr.strip()
+    if not os.path.isfile(keystore_file):
+        proc = subprocess.run(
+            ["cast", "wallet", "import", ACCOUNT_NAME, "--private-key", private_key, "--unsafe-password", password],
+            capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"cast wallet import failed: {proc.stderr}")
+        log.info("Keystore created: %s", proc.stdout.strip())
+    else:
+        log.info("Keystore already exists")
 
-    proc = subprocess.run(
-        ["cast", "wallet", "import", ACCOUNT_NAME, "--private-key", private_key, "--unsafe-password", password],
-        capture_output=True, text=True, timeout=30,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"cast wallet import failed: {proc.stderr}")
-    log.info("Keystore created: %s", proc.stdout.strip())
-
-    addr = _run_cast(["cast", "wallet", "address", "--account", ACCOUNT_NAME, "--unsafe-password", password])
+    # Derive address from private key directly (no keystore password needed)
+    addr = _run_cast(["cast", "wallet", "address", private_key])
     return addr.strip()
 
 
@@ -60,11 +58,13 @@ def sign_tx(tx_data: dict) -> str:
         "--gas-price", gas_price,
         "--chain", CHAIN_ID,
         "--account", ACCOUNT_NAME,
-        "--unsafe-password", password,
     ]
 
-    signed = _run_cast(cmd)
-    return signed.strip()
+    # Pipe password via stdin for non-interactive signing
+    proc = subprocess.run(cmd, input=password + "\n", capture_output=True, text=True, timeout=30)
+    if proc.returncode != 0:
+        raise RuntimeError(f"cast mktx failed: {proc.stderr.strip()}")
+    return proc.stdout.strip()
 
 
 def _run_cast(cmd: list[str]) -> str:
