@@ -129,7 +129,8 @@ def _build_tx(endpoint: str, payload: dict) -> dict:
     _throttle()
     with _client() as c:
         r = c.post(f"/api/v1/tx/build/{endpoint}", json=payload)
-        r.raise_for_status()
+        if r.status_code >= 400:
+            raise RuntimeError(f"tx/build/{endpoint} {r.status_code}: {r.text[:300]}")
         return r.json()
 
 
