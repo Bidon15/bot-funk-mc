@@ -161,7 +161,7 @@ def build_register_username(from_addr: str, username: str) -> dict:
 
 
 def build_post(from_addr: str, coin_address: str, message: str) -> dict:
-    return _build_tx("post", {"from": from_addr, "coinAddress": coin_address, "message": message})
+    return _build_tx("post", {"from": from_addr, "coinAddress": coin_address, "content": message})
 
 
 def build_transfer(from_addr: str, coin_address: str, to: str, amount: str) -> dict:

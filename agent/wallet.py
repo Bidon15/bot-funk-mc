@@ -6,6 +6,7 @@ import logging
 import os
 
 from eth_account import Account
+from eth_utils import to_checksum_address
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ def sign_tx(tx_data: dict) -> str:
     private_key = os.environ["PRIVATE_KEY"]
 
     tx = {
-        "to": tx_data["to"],
+        "to": to_checksum_address(tx_data["to"]),
         "data": tx_data.get("data", "0x"),
         "value": int(tx_data.get("value", 0)),
         "nonce": int(tx_data.get("nonce", 0)),
