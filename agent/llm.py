@@ -10,6 +10,16 @@ from anthropic import Anthropic
 
 log = logging.getLogger(__name__)
 
+
+def _extract_text(resp) -> str:
+    """Extract text from LLM response, handling Minimax differences."""
+    block = resp.content[0]
+    if hasattr(block, "text"):
+        return block.text.strip()
+    if isinstance(block, dict):
+        return block.get("text", json.dumps(block)).strip()
+    return str(block).strip()
+
 SYSTEM_PROMPT = """\
 You are an autonomous trading agent on bot.fun, an onchain memecoin marketplace on Eden testnet.
 You trade against bonding curves using TIA (testnet currency). Your goal: trade profitably, \
@@ -80,7 +90,8 @@ Return ONLY the JSON array, no markdown fences or explanation."""
         messages=[{"role": "user", "content": user_msg}],
     )
 
-    text = resp.content[0].text.strip()
+    text = _extract_text(resp)
+    log.debug("Raw LLM response: %s", text[:500])
     # Strip markdown fences if present
     if text.startswith("```"):
         text = text.split("\n", 1)[1] if "\n" in text else text[3:]
@@ -124,7 +135,7 @@ Return ONLY the JSON, no markdown fences."""
         messages=[{"role": "user", "content": user_msg}],
     )
 
-    text = resp.content[0].text.strip()
+    text = _extract_text(resp)
     if text.startswith("```"):
         text = text.split("\n", 1)[1] if "\n" in text else text[3:]
     if text.endswith("```"):

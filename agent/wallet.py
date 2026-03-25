@@ -60,8 +60,10 @@ def sign_tx(tx_data: dict) -> str:
         "--account", ACCOUNT_NAME,
     ]
 
-    # Pipe password via stdin for non-interactive signing
-    proc = subprocess.run(cmd, input=password + "\n", capture_output=True, text=True, timeout=30)
+    # Pass password via --password flag for non-interactive signing
+    cmd += ["--password", password]
+
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if proc.returncode != 0:
         raise RuntimeError(f"cast mktx failed: {proc.stderr.strip()}")
     return proc.stdout.strip()
