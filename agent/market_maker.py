@@ -1,12 +1,13 @@
-"""Programmatic high-frequency market maker — no LLM needed for trades."""
+"""High-frequency market maker — LLM picks strategy, code executes at volume."""
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
 
-from . import client, wallet
+from . import client, wallet, llm, server
 
 log = logging.getLogger(__name__)
 
@@ -27,133 +28,214 @@ def _fire_tx(tx_data: dict) -> str | None:
         return None
 
 
+def _ask_llm_for_targets(address: str, positions: list, trending: list, new_coins: list) -> dict:
+    """Ask LLM which coins to buy, sell, and post about. Returns structured plan."""
+    from . import server as srv
+
+    instructions = srv.get_instructions()
+    operator_block = ""
+    if instructions:
+        lines = "\n".join(f"- {i}" for i in instructions)
+        operator_block = f"\nOPERATOR INSTRUCTIONS:\n{lines}\n"
+
+    balance = client.get_balance(address)
+
+    # Summarize positions compactly
+    pos_summary = []
+    for p in positions[:30]:
+        try:
+            val = float(p.get("currentValue", 0))
+            cost = float(p.get("costBasis", 0))
+            if val < 0.001 and cost < 0.001:
+                continue
+            pos_summary.append({
+                "symbol": p.get("coinSymbol", "?"),
+                "address": p.get("coinAddress", ""),
+                "value": round(val, 4),
+                "cost": round(cost, 4),
+                "profit_pct": round((val - cost) / cost * 100, 1) if cost > 0 else 0,
+            })
+        except (ValueError, TypeError):
+            continue
+
+    snapshot = {
+        "balance": balance,
+        "positions": pos_summary,
+        "trending": [{"symbol": c.get("symbol", c.get("coinSymbol", "?")), "address": c.get("address", c.get("coinAddress", ""))} for c in trending[:15]],
+        "new_coins": [{"symbol": c.get("symbol", c.get("coinSymbol", "?")), "address": c.get("address", c.get("coinAddress", ""))} for c in new_coins[:15]],
+    }
+
+    user_msg = f"""\
+You are the STRATEGIST for a high-frequency market maker. Each cycle the engine will execute 200-300 transactions.
+Your job: pick WHICH coins to buy, which to sell, and what to post. The engine handles execution volume.
+{operator_block}
+Current state:
+{json.dumps(snapshot, indent=2)}
+
+Return a JSON object with these fields:
+- "buy_coins": list of coin addresses to buy into (engine will buy each one multiple times at 0.5 TIA per tx)
+- "sell_coins": list of coin addresses to sell (engine sells 80% of position for each)
+- "posts": list of {{"coin": "<address>", "message": "<text>"}} to post (max 5)
+- "reasoning": one sentence on your strategy this cycle
+
+Return ONLY JSON, no markdown fences."""
+
+    resp = llm._get_client().messages.create(
+        model=llm._get_model(),
+        max_tokens=2048,
+        system=llm.SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_msg}],
+    )
+
+    text = llm._extract_text(resp)
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    text = text.strip()
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        log.warning("LLM returned invalid JSON for strategy: %s", text[:200])
+        return {"buy_coins": [], "sell_coins": [], "posts": [], "reasoning": "fallback"}
+
+
 def run_cycle(address: str) -> dict:
-    """Run one market-making cycle. Returns summary stats."""
-    stats = {"buys": 0, "sells": 0, "posts": 0, "errors": 0, "buy_tia": 0, "sell_tia": 0}
+    """Run one market-making cycle: LLM picks targets, engine executes at volume."""
+    stats = {"buys": 0, "sells": 0, "posts": 0, "errors": 0, "total_txs": 0}
     tx_count = 0
 
-    # ── 1. Get our positions and find profitable ones to sell ─────
-    log.info("=== MM: Scanning positions for profit ===")
+    # ── Gather market data ────────────────────────────────────────
     try:
         agent_info = client.get_agent(address)
         positions = agent_info.get("positions", [])
     except Exception:
         positions = []
 
-    # Track which coins we've approved this cycle
-    approved = set()
+    trending_raw = []
+    new_raw = []
+    try:
+        t = client.get_trending(limit=15)
+        trending_raw = t if isinstance(t, list) else t.get("coins", t.get("data", []))
+    except Exception:
+        pass
+    try:
+        n = client.get_new_coins(limit=15)
+        new_raw = n if isinstance(n, list) else n.get("coins", n.get("data", []))
+    except Exception:
+        pass
 
-    # Sell profitable positions first (this generates realized PnL)
-    profitable = []
+    # ── Ask LLM for strategy ──────────────────────────────────────
+    log.info("=== Asking LLM for strategy ===")
+    plan = _ask_llm_for_targets(address, positions, trending_raw, new_raw)
+    log.info("LLM strategy: %s", plan.get("reasoning", "?"))
+    log.info("LLM buy targets: %d coins, sell targets: %d coins, posts: %d",
+             len(plan.get("buy_coins", [])), len(plan.get("sell_coins", [])), len(plan.get("posts", [])))
+
+    # ── Execute sells first (realized PnL) ────────────────────────
+    sell_targets = set(plan.get("sell_coins", []))
+    # Also auto-sell anything profitable even if LLM didn't pick it
     for p in positions:
         try:
-            balance = float(p.get("balance", 0))
+            val = float(p.get("currentValue", 0))
             cost = float(p.get("costBasis", 0))
-            value = float(p.get("currentValue", 0))
-            if balance <= 0 or cost <= 0:
-                continue
-            profit_ratio = (value - cost) / cost if cost > 0 else 0
-            if profit_ratio > SELL_PROFIT_THRESHOLD and value > 0.001:
-                profitable.append({**p, "_profit_ratio": profit_ratio, "_balance": balance, "_value": value})
+            if cost > 0 and (val - cost) / cost > SELL_PROFIT_THRESHOLD:
+                sell_targets.add(p.get("coinAddress", ""))
         except (ValueError, TypeError):
             continue
 
-    profitable.sort(key=lambda x: x["_value"], reverse=True)
-    log.info("Found %d profitable positions to sell", len(profitable))
+    approved = set()
+    pos_by_addr = {p.get("coinAddress", ""): p for p in positions}
 
-    for p in profitable:
-        if tx_count >= MAX_TXS_PER_CYCLE:
+    for coin_addr in sell_targets:
+        if tx_count >= MAX_TXS_PER_CYCLE or not coin_addr:
             break
-        coin_addr = p.get("coinAddress", "")
-        if not coin_addr:
+        p = pos_by_addr.get(coin_addr)
+        if not p:
             continue
-
-        # Sell 80% of position
-        sell_balance = int(p["_balance"] * 0.8)
-        if sell_balance <= 0:
-            continue
-        sell_amount = str(sell_balance)
-
         try:
-            # Approve if not yet done this cycle
+            balance = float(p.get("balance", 0))
+            if balance <= 0:
+                continue
+            sell_amount = str(int(balance * 0.8))
+
+            # Approve
             if coin_addr not in approved:
                 approve_tx = client.build_approve(address, coin_addr)
                 h = _fire_tx(approve_tx)
                 if h:
                     tx_count += 1
                     approved.add(coin_addr)
-                    time.sleep(0.5)  # brief wait for approve to land
+                    time.sleep(0.5)
                 else:
                     stats["errors"] += 1
                     continue
 
             # Sell
             sell_tx = client.build_sell(address, coin_addr, sell_amount, min_tia_out="0",
-                                        message=f"Taking profit on {p.get('coinSymbol', '?')}")
+                                        message=f"Locking profit on {p.get('coinSymbol', '?')}")
             h = _fire_tx(sell_tx)
             if h:
                 tx_count += 1
                 stats["sells"] += 1
-                stats["sell_tia"] += p["_value"] * 0.8
-                log.info("SELL %s: %s (profit %.1f%%)", p.get("coinSymbol", "?"), h, p["_profit_ratio"] * 100)
+                log.info("SELL %s: %s", p.get("coinSymbol", "?"), h)
             else:
                 stats["errors"] += 1
         except Exception as e:
-            log.warning("Sell %s failed: %s", p.get("coinSymbol", "?"), str(e)[:100])
+            log.warning("Sell failed: %s", str(e)[:100])
             stats["errors"] += 1
 
-    # ── 2. Buy into trending and new coins ────────────────────────
-    log.info("=== MM: Buying into coins ===")
+    # ── Execute buys at volume ────────────────────────────────────
+    buy_targets = plan.get("buy_coins", [])
+    # Fallback: if LLM gave nothing, use trending
+    if not buy_targets:
+        buy_targets = [c.get("address", c.get("coinAddress", "")) for c in trending_raw[:10]]
+
+    buy_targets = [a for a in buy_targets if a]  # filter empty
     buy_amount = str(MIN_BUY_TIA)
 
-    # Collect target coins from trending + new
-    target_coins = []
-    try:
-        trending = client.get_trending(limit=15)
-        coins_list = trending if isinstance(trending, list) else trending.get("coins", trending.get("data", []))
-        for c in coins_list:
-            addr = c.get("address", c.get("coinAddress", ""))
-            if addr:
-                target_coins.append({"address": addr, "symbol": c.get("symbol", c.get("coinSymbol", "?")), "source": "trending"})
-    except Exception as e:
-        log.warning("Failed to get trending: %s", e)
-
-    try:
-        new_coins = client.get_new_coins(limit=15)
-        coins_list = new_coins if isinstance(new_coins, list) else new_coins.get("coins", new_coins.get("data", []))
-        for c in coins_list:
-            addr = c.get("address", c.get("coinAddress", ""))
-            if addr and addr not in [t["address"] for t in target_coins]:
-                target_coins.append({"address": addr, "symbol": c.get("symbol", c.get("coinSymbol", "?")), "source": "new"})
-    except Exception as e:
-        log.warning("Failed to get new coins: %s", e)
-
-    log.info("Target coins: %d", len(target_coins))
-
-    # Buy each coin multiple times to hit tx count target
+    log.info("=== Executing %d buy targets, filling to %d txs ===", len(buy_targets), MAX_TXS_PER_CYCLE)
     rounds = 0
-    while tx_count < MAX_TXS_PER_CYCLE and target_coins:
-        for coin in target_coins:
+    while tx_count < MAX_TXS_PER_CYCLE and buy_targets:
+        for coin_addr in buy_targets:
             if tx_count >= MAX_TXS_PER_CYCLE:
                 break
             try:
-                tx_data = client.build_buy(address, coin["address"], buy_amount, min_tokens_out="0",
-                                           message=f"MM buy {coin['symbol']}" if rounds == 0 else "")
+                msg = "" if rounds > 0 else f"Market making round {rounds + 1}"
+                tx_data = client.build_buy(address, coin_addr, buy_amount, min_tokens_out="0", message=msg)
                 h = _fire_tx(tx_data)
                 if h:
                     tx_count += 1
                     stats["buys"] += 1
-                    stats["buy_tia"] += MIN_BUY_TIA / WEI
                 else:
                     stats["errors"] += 1
             except Exception as e:
-                log.warning("Buy %s failed: %s", coin["symbol"], str(e)[:100])
+                log.warning("Buy failed: %s", str(e)[:100])
                 stats["errors"] += 1
         rounds += 1
-        # Safety: don't loop forever if we can't fill
-        if rounds > 20:
+        if rounds > 30:
             break
 
+    # ── Execute posts ─────────────────────────────────────────────
+    for post in plan.get("posts", [])[:5]:
+        if tx_count >= MAX_TXS_PER_CYCLE:
+            break
+        try:
+            coin_addr = post.get("coin", "")
+            message = post.get("message", "")
+            if not coin_addr or not message:
+                continue
+            tx_data = client.build_post(address, coin_addr, message)
+            h = _fire_tx(tx_data)
+            if h:
+                tx_count += 1
+                stats["posts"] += 1
+            else:
+                stats["errors"] += 1
+        except Exception as e:
+            log.warning("Post failed: %s", str(e)[:100])
+            stats["errors"] += 1
+
     stats["total_txs"] = tx_count
-    log.info("=== MM Cycle done: %s ===", stats)
     return stats
