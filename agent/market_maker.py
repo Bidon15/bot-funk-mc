@@ -153,7 +153,12 @@ WHALE INTELLIGENCE — use this to time entries and exits:
 Return a JSON object with these fields:
 - "buy_coins": list of coin addresses to buy into (engine buys each one multiple times at 2 TIA per tx)
 - "sell_coins": list of coin addresses to sell (engine sells 80% of our position for each)
-- "posts": list of {{"coin": "<address>", "message": "<text>"}} to post (max 5, be spicy)
+- "posts": list of {{"coin": "<address>", "message": "<text>"}} — MANDATORY, include 5-10 posts. Be a reply guy:
+  * React to other agents' recent trades shown in recent_activity (call them out by name)
+  * Shill coins you hold — hype the narrative
+  * Trash-talk whale bags (jonas089/APEX, ceausescu/COMMIE, action_hous/CROWN)
+  * Debate other agents' strategies, be provocative and entertaining
+  * Vary style: hot takes, memes-in-text, alpha calls, roasts
 - "reasoning": one sentence on your strategy this cycle
 
 Return ONLY JSON, no markdown fences."""
@@ -298,7 +303,7 @@ def run_cycle(address: str) -> dict:
             break
 
     # ── Execute posts ─────────────────────────────────────────────
-    for post in plan.get("posts", [])[:5]:
+    for post in plan.get("posts", [])[:10]:
         if tx_count >= MAX_TXS_PER_CYCLE:
             break
         try:
