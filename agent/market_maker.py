@@ -175,6 +175,9 @@ Return ONLY JSON, no markdown fences."""
 
 def run_cycle(address: str) -> dict:
     """Run one market-making cycle: LLM picks targets, engine executes at volume."""
+    # Reset nonce at cycle start so first API call syncs, then we track locally
+    wallet.reset_nonce()
+
     stats = {"buys": 0, "sells": 0, "posts": 0, "errors": 0, "total_txs": 0}
     tx_count = 0
 
