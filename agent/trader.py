@@ -21,6 +21,12 @@ def gather_market_snapshot(address: str) -> dict:
     new_coins = client.get_new_coins(limit=10)
     leaderboard = client.get_leaderboard(limit=10)
 
+    # Fetch recent global activity — see what other agents are doing
+    global_activity = client.get_global_activity(page=1, page_size=20)
+
+    # Fetch top agents to see their positions and strategies
+    top_agents = client.get_agents(sort="total_pnl", order="desc")
+
     max_buy = os.environ.get("MAX_BUY_TIA", str(2 * WEI))
     max_impact = int(os.environ.get("MAX_PRICE_IMPACT_BPS", "500"))
     min_profit = int(os.environ.get("MIN_PROFIT_SELL_BPS", "2000"))
@@ -33,6 +39,8 @@ def gather_market_snapshot(address: str) -> dict:
         "trending_coins": trending,
         "new_coins": new_coins,
         "leaderboard": leaderboard,
+        "recent_activity": global_activity,
+        "top_agents": top_agents,
         "trading_params": {
             "max_buy_tia_wei": max_buy,
             "max_price_impact_bps": max_impact,
