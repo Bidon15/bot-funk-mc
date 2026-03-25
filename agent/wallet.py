@@ -46,14 +46,15 @@ def sign_tx(tx_data: dict) -> str:
     to = tx_data["to"]
     data = tx_data["data"]
     value = str(tx_data.get("value", "0"))
-    nonce = str(tx_data["nonce"])
-    gas_limit = str(tx_data["gasLimit"])
-    gas_price = str(tx_data["gasPrice"])
+    nonce = str(tx_data.get("nonce", tx_data.get("Nonce", "0")))
+    gas_limit = str(tx_data.get("gasLimit", tx_data.get("gas_limit", tx_data.get("gas", "300000"))))
+    gas_price = str(tx_data.get("gasPrice", tx_data.get("gas_price", tx_data.get("maxFeePerGas", "1000000007"))))
+    log.info("Signing tx: to=%s nonce=%s gasLimit=%s gasPrice=%s value=%s", to, nonce, gas_limit, gas_price, value)
 
     cmd = [
         "cast", "mktx",
-        "--to", to,
-        "--data", data,
+        to,               # positional: TO
+        data,             # positional: SIG (raw calldata)
         "--value", value,
         "--nonce", nonce,
         "--gas-limit", gas_limit,
@@ -61,7 +62,6 @@ def sign_tx(tx_data: dict) -> str:
         "--chain", CHAIN_ID,
         "--account", ACCOUNT_NAME,
         "--password", password,
-        "--offline",
     ]
 
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)

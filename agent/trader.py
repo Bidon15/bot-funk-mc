@@ -69,6 +69,7 @@ def execute_actions(actions: list[dict], address: str) -> list[dict]:
 
 def _sign_and_submit(tx_data: dict) -> dict:
     """Sign a tx and submit it, wait for confirmation."""
+    log.info("Raw tx from API: %s", json.dumps(tx_data, default=str)[:500])
     signed = wallet.sign_tx(tx_data)
     result = client.submit_tx(signed)
     tx_hash = result.get("txHash")
