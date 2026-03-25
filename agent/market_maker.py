@@ -7,7 +7,7 @@ import logging
 import os
 import time
 
-from . import client, wallet, llm, rpc, server
+from . import client, wallet, llm, server
 
 log = logging.getLogger(__name__)
 
@@ -17,18 +17,19 @@ SELL_PROFIT_THRESHOLD = 0.02  # sell when unrealized > 2% of cost
 MAX_TXS_PER_CYCLE = int(os.environ.get("MM_MAX_TXS", "300"))
 
 
-TX_DELAY = float(os.environ.get("MM_TX_DELAY", "0.3"))  # seconds between txs
-
-
-def _fire_tx(tx_data: dict) -> str | None:
-    """Sign tx with local nonce, submit via bot.fun API (so UI tracks trades)."""
+def _submit_tx(tx_data: dict) -> str | None:
+    """Sign with API nonce, submit, wait for confirmation. Reliable one-at-a-time."""
     try:
         signed = wallet.sign_tx(tx_data)
         if not signed.startswith("0x"):
             signed = "0x" + signed
         result = client.submit_tx(signed)
-        time.sleep(TX_DELAY)  # let mempool absorb before next tx
-        return result.get("txHash")
+        tx_hash = result.get("txHash")
+        if not tx_hash:
+            return None
+        # Wait for confirmation so next build_* gets correct nonce
+        client.wait_for_tx(tx_hash, timeout=15, poll_interval=1.0)
+        return tx_hash
     except Exception as e:
         log.warning("tx failed: %s", str(e)[:150])
         return None
@@ -186,9 +187,6 @@ Return ONLY JSON, no markdown fences."""
 
 def run_cycle(address: str) -> dict:
     """Run one market-making cycle: LLM picks targets, engine executes at volume."""
-    # Sync nonce from RPC at cycle start, then increment locally
-    wallet.sync_nonce(address)
-
     stats = {"buys": 0, "sells": 0, "posts": 0, "errors": 0, "total_txs": 0}
     tx_count = 0
 
@@ -250,7 +248,7 @@ def run_cycle(address: str) -> dict:
             # Approve
             if coin_addr not in approved:
                 approve_tx = client.build_approve(address, coin_addr)
-                h = _fire_tx(approve_tx)
+                h = _submit_tx(approve_tx)
                 if h:
                     tx_count += 1
                     approved.add(coin_addr)
@@ -262,7 +260,7 @@ def run_cycle(address: str) -> dict:
             # Sell
             sell_tx = client.build_sell(address, coin_addr, sell_amount, min_tia_out="0",
                                         message=f"Locking profit on {p.get('coinSymbol', '?')}")
-            h = _fire_tx(sell_tx)
+            h = _submit_tx(sell_tx)
             if h:
                 tx_count += 1
                 stats["sells"] += 1
@@ -289,7 +287,7 @@ def run_cycle(address: str) -> dict:
             try:
                 msg = "" if rounds > 0 else f"Market making round {rounds + 1}"
                 tx_data = client.build_buy(address, coin_addr, buy_amount, min_tokens_out="0", message=msg)
-                h = _fire_tx(tx_data)
+                h = _submit_tx(tx_data)
                 if h:
                     tx_count += 1
                     stats["buys"] += 1
@@ -312,7 +310,7 @@ def run_cycle(address: str) -> dict:
             if not coin_addr or not message:
                 continue
             tx_data = client.build_post(address, coin_addr, message)
-            h = _fire_tx(tx_data)
+            h = _submit_tx(tx_data)
             if h:
                 tx_count += 1
                 stats["posts"] += 1
