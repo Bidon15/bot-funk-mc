@@ -1,77 +1,43 @@
-"""Wallet management — uses Foundry's `cast` for offline tx signing."""
+"""Wallet management — pure Python signing with eth-account."""
 
 from __future__ import annotations
 
 import logging
 import os
-import subprocess
+
+from eth_account import Account
 
 log = logging.getLogger(__name__)
 
-CHAIN_ID = "3735928814"
-KEYSTORE_DIR = os.path.expanduser("~/.foundry/keystores")
-ACCOUNT_NAME = "botfun-agent"
+CHAIN_ID = 3735928814
 
 
-def setup_keystore() -> str:
-    """Import private key into cast keystore at startup. Returns wallet address."""
+def get_address() -> str:
+    """Derive wallet address from private key."""
     private_key = os.environ["PRIVATE_KEY"]
-    password = os.environ["KEYSTORE_PASSWORD"]
-
-    os.makedirs(KEYSTORE_DIR, exist_ok=True)
-    keystore_file = os.path.join(KEYSTORE_DIR, ACCOUNT_NAME)
-
-    if not os.path.isfile(keystore_file):
-        proc = subprocess.run(
-            ["cast", "wallet", "import", ACCOUNT_NAME, "--private-key", private_key, "--unsafe-password", password],
-            capture_output=True, text=True, timeout=30,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(f"cast wallet import failed: {proc.stderr}")
-        log.info("Keystore created: %s", proc.stdout.strip())
-    else:
-        log.info("Keystore already exists")
-
-    # Derive address from private key directly (no keystore password needed)
-    addr = _run_cast(["cast", "wallet", "address", private_key])
-    return addr.strip()
+    acct = Account.from_key(private_key)
+    return acct.address
 
 
 def sign_tx(tx_data: dict) -> str:
-    """Sign an unsigned transaction dict returned by bot.fun API using cast mktx.
+    """Sign an unsigned transaction dict returned by bot.fun API.
 
-    Returns the signed raw transaction hex string.
+    Returns the signed raw transaction as a hex string (0x-prefixed).
     """
-    password = os.environ["KEYSTORE_PASSWORD"]
-    to = tx_data["to"]
-    data = tx_data["data"]
-    value = str(tx_data.get("value", "0"))
-    nonce = str(tx_data.get("nonce", tx_data.get("Nonce", "0")))
-    gas_limit = str(tx_data.get("gasLimit", tx_data.get("gas_limit", tx_data.get("gas", "300000"))))
-    gas_price = str(tx_data.get("gasPrice", tx_data.get("gas_price", tx_data.get("maxFeePerGas", "1000000007"))))
-    log.info("Signing tx: to=%s nonce=%s gasLimit=%s gasPrice=%s value=%s", to, nonce, gas_limit, gas_price, value)
+    private_key = os.environ["PRIVATE_KEY"]
 
-    cmd = [
-        "cast", "mktx",
-        to,               # positional: TO
-        data,             # positional: SIG (raw calldata)
-        "--value", value,
-        "--nonce", nonce,
-        "--gas-limit", gas_limit,
-        "--gas-price", gas_price,
-        "--chain", CHAIN_ID,
-        "--account", ACCOUNT_NAME,
-        "--password", password,
-    ]
+    tx = {
+        "to": tx_data["to"],
+        "data": tx_data.get("data", "0x"),
+        "value": int(tx_data.get("value", 0)),
+        "nonce": int(tx_data.get("nonce", 0)),
+        "gas": int(tx_data.get("gasLimit", tx_data.get("gas_limit", tx_data.get("gas", 300000)))),
+        "gasPrice": int(tx_data.get("gasPrice", tx_data.get("gas_price", 1000000007))),
+        "chainId": CHAIN_ID,
+    }
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    if proc.returncode != 0:
-        raise RuntimeError(f"cast mktx failed: {proc.stderr.strip()}")
-    return proc.stdout.strip()
+    log.info("Signing tx: to=%s nonce=%d gas=%d gasPrice=%d value=%d",
+             tx["to"], tx["nonce"], tx["gas"], tx["gasPrice"], tx["value"])
 
-
-def _run_cast(cmd: list[str]) -> str:
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    if proc.returncode != 0:
-        raise RuntimeError(f"cast command failed: {' '.join(cmd[:4])}... — {proc.stderr.strip()}")
-    return proc.stdout
+    signed = Account.sign_transaction(tx, private_key)
+    return signed.raw_transaction.hex()

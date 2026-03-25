@@ -20,11 +20,7 @@ log = logging.getLogger("botfun")
 
 def startup() -> str:
     """Initialise wallet, register username, request faucet if needed. Returns address."""
-    log.info("Setting up keystore...")
-    address = wallet.setup_keystore()
-    env_addr = os.environ.get("WALLET_ADDRESS", "").lower()
-    if env_addr and env_addr != address.lower():
-        log.warning("WALLET_ADDRESS env (%s) doesn't match derived address (%s), using derived", env_addr, address)
+    address = wallet.get_address()
     log.info("Wallet address: %s", address)
 
     # Request faucet TIA if balance is low
