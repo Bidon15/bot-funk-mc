@@ -171,10 +171,14 @@ def build_transfer(from_addr: str, coin_address: str, to: str, amount: str) -> d
 # ── Submit & track ───────────────────────────────────────────
 
 def submit_tx(signed_tx: str) -> dict:
+    # Ensure 0x prefix
+    if not signed_tx.startswith("0x"):
+        signed_tx = "0x" + signed_tx
     _throttle()
     with _client() as c:
         r = c.post("/api/v1/tx/submit", json={"signedTx": signed_tx})
-        r.raise_for_status()
+        if r.status_code >= 400:
+            raise RuntimeError(f"tx/submit {r.status_code}: {r.text[:300]}")
         return r.json()
 
 
