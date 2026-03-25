@@ -7,24 +7,26 @@ import logging
 import os
 import time
 
-from . import client, wallet, llm, server
+from . import client, wallet, llm, rpc, server
 
 log = logging.getLogger(__name__)
 
 WEI = 10**18
-MIN_BUY_TIA = int(os.environ.get("MM_MIN_BUY_WEI", str(int(0.5 * WEI))))  # 0.5 TIA default
+MIN_BUY_TIA = int(os.environ.get("MM_MIN_BUY_WEI", str(2 * WEI)))  # 2 TIA default
 SELL_PROFIT_THRESHOLD = 0.02  # sell when unrealized > 2% of cost
 MAX_TXS_PER_CYCLE = int(os.environ.get("MM_MAX_TXS", "300"))
 
 
 def _fire_tx(tx_data: dict) -> str | None:
-    """Sign and submit a tx, don't wait for confirmation. Returns txHash or None."""
+    """Sign tx locally (with managed nonce) and submit directly to RPC."""
     try:
         signed = wallet.sign_tx(tx_data)
-        result = client.submit_tx(signed)
-        return result.get("txHash")
+        if not signed.startswith("0x"):
+            signed = "0x" + signed
+        tx_hash = rpc.send_raw_tx(signed)
+        return tx_hash
     except Exception as e:
-        log.warning("tx failed: %s", str(e)[:120])
+        log.warning("tx failed: %s", str(e)[:150])
         return None
 
 
@@ -145,7 +147,7 @@ WHALE INTELLIGENCE — use this to time entries and exits:
 - Whales with high unrealized but low realized = vulnerable to rug, parasitize them
 
 Return a JSON object with these fields:
-- "buy_coins": list of coin addresses to buy into (engine buys each one multiple times at 0.5 TIA per tx)
+- "buy_coins": list of coin addresses to buy into (engine buys each one multiple times at 2 TIA per tx)
 - "sell_coins": list of coin addresses to sell (engine sells 80% of our position for each)
 - "posts": list of {{"coin": "<address>", "message": "<text>"}} to post (max 5, be spicy)
 - "reasoning": one sentence on your strategy this cycle
@@ -175,8 +177,8 @@ Return ONLY JSON, no markdown fences."""
 
 def run_cycle(address: str) -> dict:
     """Run one market-making cycle: LLM picks targets, engine executes at volume."""
-    # Reset nonce at cycle start so first API call syncs, then we track locally
-    wallet.reset_nonce()
+    # Sync nonce from RPC at cycle start, then increment locally
+    wallet.sync_nonce(address)
 
     stats = {"buys": 0, "sells": 0, "posts": 0, "errors": 0, "total_txs": 0}
     tx_count = 0
@@ -233,7 +235,8 @@ def run_cycle(address: str) -> dict:
             balance = float(p.get("balance", 0))
             if balance <= 0:
                 continue
-            sell_amount = str(int(balance * 0.8))
+            # balance is human-readable, convert to wei for the API
+            sell_amount = str(int(balance * 0.8 * WEI))
 
             # Approve
             if coin_addr not in approved:
