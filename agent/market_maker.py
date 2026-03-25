@@ -17,14 +17,18 @@ SELL_PROFIT_THRESHOLD = 0.02  # sell when unrealized > 2% of cost
 MAX_TXS_PER_CYCLE = int(os.environ.get("MM_MAX_TXS", "300"))
 
 
+TX_DELAY = float(os.environ.get("MM_TX_DELAY", "0.3"))  # seconds between txs
+
+
 def _fire_tx(tx_data: dict) -> str | None:
-    """Sign tx locally (with managed nonce) and submit directly to RPC."""
+    """Sign tx with local nonce, submit via bot.fun API (so UI tracks trades)."""
     try:
         signed = wallet.sign_tx(tx_data)
         if not signed.startswith("0x"):
             signed = "0x" + signed
-        tx_hash = rpc.send_raw_tx(signed)
-        return tx_hash
+        result = client.submit_tx(signed)
+        time.sleep(TX_DELAY)  # let mempool absorb before next tx
+        return result.get("txHash")
     except Exception as e:
         log.warning("tx failed: %s", str(e)[:150])
         return None

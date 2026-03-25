@@ -54,7 +54,8 @@ def sign_tx(tx_data: dict) -> str:
         "value": int(tx_data.get("value", 0)),
         "nonce": nonce,
         "gas": int(tx_data.get("gasLimit", tx_data.get("gas_limit", tx_data.get("gas", 300000)))),
-        "gasPrice": int(tx_data.get("gasPrice", tx_data.get("gas_price", 1000000007))),
+        # Bump gas price 10% above API suggestion to avoid "replacement underpriced"
+        "gasPrice": int(int(tx_data.get("gasPrice", tx_data.get("gas_price", 1000000007))) * 1.1),
         "chainId": CHAIN_ID,
     }
 
