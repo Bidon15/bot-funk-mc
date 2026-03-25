@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import subprocess
-import tempfile
 
 log = logging.getLogger(__name__)
 
@@ -26,27 +24,18 @@ def setup_keystore() -> str:
     # If keystore already exists, derive address from it
     if os.path.isfile(keystore_file):
         log.info("Keystore already exists, deriving address")
-        addr = _run_cast(["cast", "wallet", "address", "--account", ACCOUNT_NAME, "--password", password])
+        addr = _run_cast(["cast", "wallet", "address", "--account", ACCOUNT_NAME, "--unsafe-password", password])
         return addr.strip()
 
-    # Write password to temp file for non-interactive import
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as pf:
-        pf.write(password)
-        pw_file = pf.name
+    proc = subprocess.run(
+        ["cast", "wallet", "import", ACCOUNT_NAME, "--private-key", private_key, "--unsafe-password", password],
+        capture_output=True, text=True, timeout=30,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"cast wallet import failed: {proc.stderr}")
+    log.info("Keystore created: %s", proc.stdout.strip())
 
-    try:
-        # cast wallet import expects interactive input; use stdin piping
-        proc = subprocess.run(
-            ["cast", "wallet", "import", ACCOUNT_NAME, "--private-key", private_key, "--password-file", pw_file],
-            capture_output=True, text=True, timeout=30,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(f"cast wallet import failed: {proc.stderr}")
-        log.info("Keystore created: %s", proc.stdout.strip())
-    finally:
-        os.unlink(pw_file)
-
-    addr = _run_cast(["cast", "wallet", "address", "--account", ACCOUNT_NAME, "--password", password])
+    addr = _run_cast(["cast", "wallet", "address", "--account", ACCOUNT_NAME, "--unsafe-password", password])
     return addr.strip()
 
 
@@ -71,7 +60,7 @@ def sign_tx(tx_data: dict) -> str:
         "--gas-price", gas_price,
         "--chain", CHAIN_ID,
         "--account", ACCOUNT_NAME,
-        "--password", password,
+        "--unsafe-password", password,
     ]
 
     signed = _run_cast(cmd)
