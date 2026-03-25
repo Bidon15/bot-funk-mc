@@ -270,9 +270,7 @@ def run_cycle(address: str) -> dict:
 
     # ── Execute buys at volume ────────────────────────────────────
     buy_targets = plan.get("buy_coins", [])
-    # Fallback: if LLM gave nothing, use trending
-    if not buy_targets:
-        buy_targets = [c.get("address", c.get("coinAddress", "")) for c in trending_raw[:10]]
+    # If LLM returns empty buy list, respect it (could be sell-only mode)
 
     buy_targets = [a for a in buy_targets if a]  # filter empty
     buy_amount = str(MIN_BUY_TIA)
@@ -296,7 +294,7 @@ def run_cycle(address: str) -> dict:
                 log.warning("Buy failed: %s", str(e)[:100])
                 stats["errors"] += 1
         rounds += 1
-        if rounds > 30:
+        if rounds >= 3:  # max 3 buys per coin per cycle to avoid self-pumping
             break
 
     # ── Execute posts ─────────────────────────────────────────────
