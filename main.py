@@ -1,4 +1,4 @@
-"""bot.fun autonomous trading agent — main loop."""
+"""bot.fun autonomous trading agent — high-frequency market maker."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import os
 import sys
 import time
 
-from agent import client, wallet, trader, llm, server
+from agent import client, wallet, market_maker, server
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,20 +23,18 @@ def startup() -> str:
     address = wallet.get_address()
     log.info("Wallet address: %s", address)
 
-    # Request faucet TIA if balance is low
     try:
         bal = client.get_balance(address)
         tia_balance = int(bal.get("balance", bal.get("tiaBalance", "0")))
         log.info("TIA balance: %s wei", tia_balance)
-        if tia_balance < 10**18:  # < 1 TIA
+        if tia_balance < 10**18:
             log.info("Low balance, requesting faucet...")
             faucet_resp = client.request_faucet(address)
             log.info("Faucet response: %s", json.dumps(faucet_resp))
             time.sleep(5)
     except Exception as e:
-        log.warning("Balance/faucet check failed (may be fine on first run): %s", e)
+        log.warning("Balance/faucet check failed: %s", e)
 
-    # Register username if configured
     username = os.environ.get("AGENT_USERNAME")
     if username:
         try:
@@ -60,37 +58,27 @@ def startup() -> str:
 
 
 def run_loop(address: str):
-    """Main trading loop — gather data, ask LLM, execute."""
-    interval = int(os.environ.get("LOOP_INTERVAL_SECONDS", "180"))
+    """Main market-making loop — programmatic high-frequency trading."""
+    interval = int(os.environ.get("LOOP_INTERVAL_SECONDS", "30"))
+    cycle = 0
 
     while True:
+        cycle += 1
         try:
-            log.info("=== Gathering market snapshot ===")
-            snapshot = trader.gather_market_snapshot(address)
-
-            log.info("=== Asking LLM for decisions ===")
-            actions = llm.decide_actions(snapshot)
-            log.info("LLM decided %d action(s): %s", len(actions), json.dumps(actions, default=str)[:500])
-
-            if actions and actions[0].get("action") != "skip":
-                log.info("=== Executing actions ===")
-                results = trader.execute_actions(actions, address)
-                for r in results:
-                    log.info("Result: %s", json.dumps(r, default=str)[:300])
-                server.set_last_cycle({"actions": actions, "results": results, "ts": time.time()})
-            else:
-                log.info("LLM decided to skip this cycle.")
-                server.set_last_cycle({"actions": [{"action": "skip"}], "results": [], "ts": time.time()})
-
+            log.info("=== CYCLE %d START ===", cycle)
+            stats = market_maker.run_cycle(address)
+            server.set_last_cycle({"cycle": cycle, "stats": stats, "ts": time.time()})
+            log.info("=== CYCLE %d DONE: %d txs (%d buys, %d sells, %d errors) ===",
+                     cycle, stats["total_txs"], stats["buys"], stats["sells"], stats["errors"])
         except Exception as e:
-            log.error("Loop iteration failed: %s", e, exc_info=True)
+            log.error("Cycle %d failed: %s", cycle, e, exc_info=True)
 
-        log.info("Sleeping %ds until next cycle...", interval)
+        log.info("Sleeping %ds...", interval)
         time.sleep(interval)
 
 
 def main():
-    log.info("=== bot.fun Trading Agent starting ===")
+    log.info("=== bot.fun Market Maker starting ===")
     server.start()
     address = startup()
     run_loop(address)
